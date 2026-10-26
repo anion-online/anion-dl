@@ -10,12 +10,12 @@ Tauri 2; MP4 собирается встроенным минимальным LG
 
 ## Скачать
 
-- [Последний релиз для всех платформ](https://github.com/HeilungZeit/anion-dl/releases/latest)
-- [macOS — Apple Silicon](https://github.com/HeilungZeit/anion-dl/releases/latest/download/anion-dl-macos-arm64.dmg)
-- [macOS — Intel](https://github.com/HeilungZeit/anion-dl/releases/latest/download/anion-dl-macos-x64.dmg)
-- [Windows x64](https://github.com/HeilungZeit/anion-dl/releases/latest/download/anion-dl-windows-x64-setup.exe)
-- [Linux x64 — AppImage](https://github.com/HeilungZeit/anion-dl/releases/latest/download/anion-dl-linux-x64.AppImage)
-- [Linux x64 — DEB](https://github.com/HeilungZeit/anion-dl/releases/latest/download/anion-dl-linux-x64.deb)
+- [Последний релиз для всех платформ](https://github.com/anion-online/anion-dl/releases/latest)
+- [macOS — Apple Silicon](https://github.com/anion-online/anion-dl/releases/latest/download/anion-dl-macos-arm64.dmg)
+- [macOS — Intel](https://github.com/anion-online/anion-dl/releases/latest/download/anion-dl-macos-x64.dmg)
+- [Windows x64](https://github.com/anion-online/anion-dl/releases/latest/download/anion-dl-windows-x64-setup.exe)
+- [Linux x64 — AppImage](https://github.com/anion-online/anion-dl/releases/latest/download/anion-dl-linux-x64.AppImage)
+- [Linux x64 — DEB](https://github.com/anion-online/anion-dl/releases/latest/download/anion-dl-linux-x64.deb)
 
 Сборки не подписаны. macOS Gatekeeper и Windows SmartScreen покажут системное
 предупреждение при первом запуске.

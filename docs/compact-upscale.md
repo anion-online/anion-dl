@@ -1,7 +1,7 @@
 # anion-dl: свой Compact-апскейлер на WGSL
 
 > **Октябрь 2026: рендерер переехал в форк.** Ядро из этого документа ушло в
-> [anionWebGPU](https://github.com/HeilungZeit/anionWebGPU) (пресет
+> [anionWebGPU](https://github.com/anion-online/anionWebGPU) (пресет
 > `ModeCompact`), там ускорено и дообучено под Kodik. Плеер anion-dl, как и
 > фронт, берёт «Детали» из форка с весами `janai-v2-kodik-mix75`;
 > `src/app/player/compact/`, `scripts/emit-compact-shaders.ts` и стенд

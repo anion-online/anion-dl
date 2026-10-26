@@ -13,7 +13,7 @@ import type { Anime4KPipeline } from 'anime4k-webgpu';
  * На Linux (WebKitGTK) WebGPU может отсутствовать — отсюда проверка поддержки
  * и режим «Выключен» по умолчанию.
  *
- * Пресеты — из форка HeilungZeit/anionWebGPU, общего с фронтом `anion`.
+ * Пресеты — из форка anion-online/anionWebGPU, общего с фронтом `anion`.
  * «Детали» (`compact`) идут на его ядре: собственный WGSL-рендерер anion-dl
  * переехал туда и там дальше ускорен и дообучен.
  */
