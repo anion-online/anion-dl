@@ -49,6 +49,8 @@ export const ApiErrorCode = {
   CaptchaInvalid: 'CAPTCHA_INVALID',
   CaptchaRequired: 'CAPTCHA_REQUIRED',
   TooManyAttempts: 'TOO_MANY_ATTEMPTS',
+  EmailNotVerified: 'EMAIL_NOT_VERIFIED',
+  SubscriptionLimit: 'SUBSCRIPTION_LIMIT',
 } as const;
 
 export type ApiErrorCodeValue = (typeof ApiErrorCode)[keyof typeof ApiErrorCode];

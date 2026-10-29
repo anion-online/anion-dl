@@ -18,6 +18,13 @@ export const DEFAULT_WINDOW_SECONDS = 90;
 /** Хвост серии, в котором видна кнопка следующей серии, если начало эндинга неизвестно. */
 export const TAIL_SECONDS = 2 * 60;
 
+/**
+ * Эндинг, начавшийся дальше этого от конца серии, автопереходом не обрывается:
+ * титры с превью укладываются в две-три минуты, а лишнее — сцена после титров
+ * или неточный тайминг.
+ */
+export const AUTO_NEXT_TAIL_SECONDS = 3 * 60;
+
 export interface Segment {
   startSeconds: number;
   /** Необязателен: у Kodik-серий известно только начало. */
@@ -101,6 +108,21 @@ export class SkipController {
     }
 
     return null;
+  }
+
+  /**
+   * С какой секунды можно уйти на следующую серию, не дожидаясь конца:
+   * начало эндинга, если оно близко к концу серии. null — только по концу.
+   */
+  autoNextFromSecs(durationSecs: number): number | null {
+    if (this.isLastEpisode || !this.ending || durationSecs <= 0) {
+      return null;
+    }
+
+    const start = this.ending.startSeconds;
+    return start < durationSecs && durationSecs - start <= AUTO_NEXT_TAIL_SECONDS
+      ? start
+      : null;
   }
 
   /** Куда перематывать при пропуске опенинга. */

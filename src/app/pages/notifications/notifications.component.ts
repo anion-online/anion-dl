@@ -17,6 +17,7 @@ import {
   NotificationsService,
 } from '../../api/notifications.service';
 import { UserService } from '../../api/user.service';
+import { LoadErrorComponent } from '../../components/load-error/load-error.component';
 import { NotificationItemComponent } from '../../components/notification-item/notification-item.component';
 
 const dayFormat = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long', weekday: 'long' });
@@ -40,7 +41,14 @@ function dayLabel(date: Date, today: Date): string {
 
 @Component({
   selector: 'app-notifications',
-  imports: [RouterLink, NotificationItemComponent, TuiButton, TuiIcon, TuiLoader],
+  imports: [
+    RouterLink,
+    LoadErrorComponent,
+    NotificationItemComponent,
+    TuiButton,
+    TuiIcon,
+    TuiLoader,
+  ],
   templateUrl: './notifications.component.html',
   styleUrl: './notifications.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,

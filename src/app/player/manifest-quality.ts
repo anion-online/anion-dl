@@ -38,9 +38,13 @@ const QUALITY_IN_NAME = /(\d+)\.mp4:hls:/;
  */
 const QUALITY_IN_PROXY_NAME = /\/(\d+)p\.m3u8$/;
 
+/** У AniLiberty — каталог перед плейлистом: `…/ts/9542/1/720/<hash>.m3u8`. */
+const QUALITY_IN_DIRECTORY = /\/(\d+)\/[^/]+\.m3u8$/;
+
 export function qualityOf(manifestUrl: string): number | null {
   const digits =
     QUALITY_IN_NAME.exec(manifestUrl)?.[1] ??
-    QUALITY_IN_PROXY_NAME.exec(manifestUrl)?.[1];
+    QUALITY_IN_PROXY_NAME.exec(manifestUrl)?.[1] ??
+    QUALITY_IN_DIRECTORY.exec(manifestUrl)?.[1];
   return digits ? Number(digits) : null;
 }

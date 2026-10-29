@@ -31,6 +31,18 @@ export class UserService {
   readonly isInitialized = this.initialized.asReadonly();
   readonly isAuthenticated = computed(() => this.state() !== null);
   readonly isAdmin = computed(() => this.state()?.role === 'admin');
+  readonly isEmailVerified = computed(
+    () => this.state()?.emailVerified !== false
+  );
+
+  /**
+   * Бэк отказал из-за неподтверждённой почты — значит, наше знание о ней
+   * устарело. Подтверждают на сайте; до следующего чтения `/user` верим
+   * отказу.
+   */
+  markEmailUnverified(): void {
+    this.state.update((user) => (user ? { ...user, emailVerified: false } : user));
+  }
 
   /** Имя для шапки: username, а при его отсутствии — часть адреса до собаки. */
   readonly displayName = computed(() => {

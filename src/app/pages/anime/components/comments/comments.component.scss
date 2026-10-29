@@ -69,6 +69,17 @@
   color: var(--anion-negative-text);
 }
 
+.comments__retry {
+  margin-inline-start: var(--anion-space-8);
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--anion-text-primary);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
 .thread {
   display: flex;
   flex-direction: column;

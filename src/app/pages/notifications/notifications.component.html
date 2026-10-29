@@ -43,7 +43,12 @@
         </div>
       </section>
     } @empty {
-      @if (notifications.isLoaded()) {
+      @if (notifications.loadFailed()) {
+        <app-load-error
+          title="Не удалось загрузить уведомления"
+          (retry)="notifications.reload()"
+        />
+      } @else if (notifications.isLoaded()) {
         <div class="empty-state">
           <div class="empty-state__icon" aria-hidden="true">
             <tui-icon icon="@tui.bell-off" />
@@ -59,7 +64,12 @@
     }
   </div>
 
-  @if (notifications.nextCursor() !== null) {
+  @if (notifications.loadFailed() && groups().length > 0) {
+    <app-load-error
+      title="Не удалось загрузить ещё"
+      (retry)="notifications.loadMore()"
+    />
+  } @else if (notifications.nextCursor() !== null) {
     <div #sentinel class="notifications-page__sentinel" aria-hidden="true"></div>
   }
   @if (notifications.isLoading()) {

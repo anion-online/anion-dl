@@ -14,7 +14,7 @@ import {
 import { TuiIcon } from '@taiga-ui/core';
 
 import { isCvhDubbing, voiceOf } from '../api/video-source';
-import type { NativePlaybackOption } from './native-playback-option';
+import { type NativePlaybackOption, progressKey } from './native-playback-option';
 
 const RANGE_SIZE = 100;
 
@@ -28,6 +28,12 @@ const RANGE_SIZE = 100;
 })
 export class PlaybackPickerComponent {
   readonly options = input.required<readonly NativePlaybackOption[]>();
+  // Отметки — отдельно от каталога: прогресс меняется каждые 10 с, и каталог
+  // в тысячи серий не должен из-за этого пересобираться.
+  /** Просмотренные номера серий — общие для всех озвучек. */
+  readonly watched = input<ReadonlySet<number>>(new Set());
+  /** Досмотренная доля серии в процентах, по `progressKey`. */
+  readonly progress = input<ReadonlyMap<string, number>>(new Map());
   readonly currentUrl = input.required<string>();
   readonly pendingUrl = input<string | null>(null);
   readonly error = input('');
@@ -36,6 +42,7 @@ export class PlaybackPickerComponent {
   readonly tab = signal<'episodes' | 'dubbing'>('episodes');
   readonly range = signal(0);
   readonly voiceOf = voiceOf;
+  readonly progressKey = progressKey;
   private readonly list = viewChild<ElementRef<HTMLElement>>('list');
   readonly current = computed(() => this.options().find((option) => option.iframeUrl === this.currentUrl()));
   readonly episodes = computed(() =>

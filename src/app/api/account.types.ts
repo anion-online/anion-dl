@@ -25,6 +25,12 @@ export interface UserResponse {
   createdAt: string;
   updatedAt: string;
   lastSeenAt?: string;
+  /**
+   * Почта подтверждена. До подтверждения бэк не даёт подписываться на
+   * уведомления (`EMAIL_NOT_VERIFIED`). Старый бэк поля не присылал —
+   * отсутствие значит «подтверждена».
+   */
+  emailVerified?: boolean;
   devices?: UserDevice[];
 }
 

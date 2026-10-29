@@ -38,7 +38,7 @@
           class="picker__episode"
           type="button"
           [attr.aria-current]="option.iframeUrl === currentUrl() ? 'true' : null"
-          [attr.aria-label]="'Серия ' + option.episode + (option.watched ? ', просмотрена' : '')"
+          [attr.aria-label]="'Серия ' + option.episode + (watched().has(option.episode) ? ', просмотрена' : '')"
           [attr.aria-busy]="pendingUrl() === option.iframeUrl"
           (click)="choose.emit(option.iframeUrl)"
         >
@@ -48,12 +48,12 @@
               <span class="picker__spinner" aria-hidden="true"></span>
             } @else if (option.iframeUrl === currentUrl()) {
               <tui-icon icon="@tui.play" />
-            } @else if (option.watched) {
+            } @else if (watched().has(option.episode)) {
               <tui-icon icon="@tui.check" />
             }
           </span>
-          @if (option.progress > 0) {
-            <span class="picker__progress" aria-hidden="true"><span [style.width.%]="option.progress"></span></span>
+          @if (progress().get(progressKey(option.dubbing, option.episode)); as percent) {
+            <span class="picker__progress" aria-hidden="true"><span [style.width.%]="percent"></span></span>
           }
         </button>
       }

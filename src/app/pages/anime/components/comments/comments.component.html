@@ -30,8 +30,11 @@
     </div>
   </header>
 
-  @if (errorText()) {
-    <p class="comments__state comments__state--error">{{ errorText() }}</p>
+  @if (errorText() && comments().length === 0) {
+    <p class="comments__state comments__state--error" role="alert">
+      {{ errorText() }}
+      <button class="comments__retry" type="button" (click)="retry()">Повторить</button>
+    </p>
   } @else if (isLoading() && comments().length === 0) {
     <p class="comments__state">Загружаю…</p>
   } @else if (comments().length === 0) {
@@ -151,7 +154,12 @@
       }
     </ul>
 
-    @if (hasMore()) {
+    @if (errorText()) {
+      <p class="comments__state comments__state--error" role="alert">
+        {{ errorText() }}
+        <button class="comments__retry" type="button" (click)="retry()">Повторить</button>
+      </p>
+    } @else if (hasMore()) {
       <button
         class="comments__more"
         type="button"

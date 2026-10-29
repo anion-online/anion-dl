@@ -16,6 +16,7 @@ import { TuiTabs } from '@taiga-ui/kit';
 
 import { AnimeService } from '../../api/anime.service';
 import type { Video } from '../../api/anime.types';
+import { AnilibriaService, withAnilibria } from '../../api/anilibria.service';
 import { CvhService } from '../../api/cvh.service';
 import { UserService } from '../../api/user.service';
 import {
@@ -61,6 +62,7 @@ import { RecommendationsTabComponent } from './components/recommendations-tab/re
 export class AnimeComponent {
   private readonly api = inject(AnimeService);
   private readonly cvh = inject(CvhService);
+  private readonly anilibria = inject(AnilibriaService);
   private readonly settings = inject(PlayerSettingsService);
   private readonly localProgress = inject(WatchProgressService);
   private readonly users = inject(UserService);
@@ -99,9 +101,25 @@ export class AnimeComponent {
     loader: ({ params }) => this.cvh.videosFor(params.malId),
   });
 
-  /** Всё, что приложение умеет играть или качать: Kodik, затем CDNVideoHub. */
+  /**
+   * Релиз AniLiberty: в озвучке AniLibria серии идут с его CDN в 1080p
+   * вместо Kodik. Сопоставление с тайтлом держит бэк, ищет по shikimori id.
+   */
+  readonly anilibriaRelease = resource({
+    params: () => {
+      const shikimoriId = this.anime.value()?.remoteIds?.shikimoriId;
+      return shikimoriId ? { shikimoriId } : undefined;
+    },
+    loader: ({ params }) => this.anilibria.release(params.shikimoriId),
+  });
+
+  /** Всё, что приложение умеет играть или качать: Kodik с AniLiberty, затем CDNVideoHub. */
   readonly playableVideos = computed<readonly Video[]>(() => [
-    ...(this.anime.value()?.videos.filter(isKodik) ?? []),
+    ...withAnilibria(
+      this.anime.value()?.videos.filter(isKodik) ?? [],
+      this.anime.value()?.remoteIds?.shikimoriId ?? 0,
+      this.anilibriaRelease.value() ?? null
+    ),
     ...(this.cvhVideos.value() ?? []),
   ]);
 
@@ -174,10 +192,13 @@ export class AnimeComponent {
       const available = this.dubbings();
       const preferredSource = this.preferredSource();
       const animeId = this.anime.value()?.animeId;
+      // Релиз AniLiberty подменяет серии озвучки AniLibria: выбранная до его
+      // прихода серия тут же сменилась бы на другую.
       if (
         animeId === undefined ||
         !this.localProgress.isTitleReady(animeId) ||
-        preferredSource === undefined
+        preferredSource === undefined ||
+        this.anilibriaRelease.isLoading()
       ) {
         return;
       }

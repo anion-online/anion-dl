@@ -103,12 +103,15 @@ export class NotificationsService {
   private readonly cursor = signal<number | null>(null);
   private readonly loaded = signal(false);
   private readonly loading = signal(false);
+  /** Последняя загрузка страницы упала; следующая попытка сбрасывает. */
+  private readonly failed = signal(false);
 
   readonly unreadCount = this.count.asReadonly();
   readonly items = this.list.asReadonly();
   readonly nextCursor = this.cursor.asReadonly();
   readonly isLoaded = this.loaded.asReadonly();
   readonly isLoading = this.loading.asReadonly();
+  readonly loadFailed = this.failed.asReadonly();
 
   private started = false;
   private pendingPage: Promise<void> | null = null;
@@ -216,6 +219,7 @@ export class NotificationsService {
     }
 
     this.loading.set(true);
+    this.failed.set(false);
     const query = cursor === null ? '' : `&cursor=${cursor}`;
     this.pendingPage = this.api
       .get<NotificationsPage>(`/notifications?limit=${PAGE_SIZE}${query}`)
@@ -227,7 +231,8 @@ export class NotificationsService {
         this.loaded.set(true);
       })
       .catch(() => {
-        // Список недоступен — показываем то, что уже загружено.
+        // Список недоступен — показываем то, что уже загружено, и «Повторить».
+        this.failed.set(true);
       })
       .finally(() => {
         this.loading.set(false);

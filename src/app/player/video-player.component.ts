@@ -21,13 +21,12 @@ import { TuiIcon } from '@taiga-ui/core';
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { emit, listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import Hls, { type ErrorData, type HlsConfig } from 'hls.js';
+import Hls, { type ErrorData, type HlsConfig } from 'hls.js/light';
 
 import type { VideoSkips } from '../api/anime.types';
 import { ResolverService } from '../api/resolver.service';
 import { currentWindowTarget } from '../windows/current-window';
 import { AutoCloseMenuDirective } from './auto-close-menu.directive';
-import { qualitiesFor } from '../api/video-source';
 import { DEFAULT_QUALITY, qualityOf } from './manifest-quality';
 import {
   MediaSessionBridge,
@@ -55,13 +54,6 @@ import {
 } from './upscale';
 import { UpscaleFallback } from './upscale-fallback';
 import { ScreenWakeLock } from './wake-lock';
-import type { PlayerMeasurement } from '../telemetry/player-measurement';
-import { gpuClass, screenClass, upscalePerf } from '../telemetry/hardware';
-import { TelemetryService } from '../telemetry/telemetry.service';
-import type {
-  PlayerTelemetryContext,
-  PlayerTelemetryTarget,
-} from '../telemetry/telemetry.types';
 
 export interface PlaybackProgress {
   iframeUrl: string;
@@ -97,15 +89,18 @@ const VOLUME_STEP = 0.05;
 /** Сколько секунд даётся, чтобы отменить переход на следующую серию. */
 export const AUTO_NEXT_SECS = 5;
 
+/**
+ * Больший шаг позиции между тиками — перемотка, а не проигрывание: через
+ * начало эндинга серию должны проиграть, а не перескочить. С запасом на
+ * ускоренное воспроизведение.
+ */
+const PLAY_THROUGH_MAX_STEP_SECS = 3;
+
 /** Как долго держится один кадр заставки до смены. */
 const FRAME_INTERVAL_MS = 6000;
 
 /** Громкость пишется на диск не на каждый шаг ползунка, а когда он замер. */
 const VOLUME_SAVE_MS = 500;
-
-/** Замер скорости улучшения: окна статистики по секунде — разгон и сам замер. */
-const UPSCALE_PERF_WARMUP = 3;
-const UPSCALE_PERF_WINDOWS = 10;
 
 /** Сколько держится подсказка «+10 с» после перемотки стрелками. */
 const SEEK_BADGE_SHOW_MS = 700;
@@ -151,6 +146,8 @@ const MEDIA_RECOVERY_WINDOW_MS = 10_000;
 const REFRESH_AHEAD_RETRY_MS = 30_000;
 
 const RESOLVE_FAILED_TEXT = 'Не удалось получить поток серии. Попробуйте ещё раз.';
+const PROVIDER_FAILED_TEXT =
+  'Не удалось получить поток серии: источник видео не отвечает. Похоже, проблема на стороне провайдера — попробуйте позже.';
 const NETWORK_FAILED_TEXT =
   'Не удалось загрузить видео. Проверьте соединение и попробуйте ещё раз.';
 const MEDIA_FAILED_TEXT = 'Не удалось воспроизвести видео. Попробуйте ещё раз.';
@@ -268,6 +265,20 @@ export function formatTime(totalSecs: number): string {
   return `${hours > 0 ? `${hours}:` : ''}${mm}:${String(secs).padStart(2, '0')}`;
 }
 
+/**
+ * Запас впереди при просмотре. По умолчанию hls.js держит лишь 30 с: на
+ * медленном CDN этого не хватает, чтобы пережить провал скорости. Две минуты
+ * вперёд — порядка 30–60 МБ при 720p; потолок в байтах (maxBufferSize) поднят,
+ * иначе он обрезал бы запас раньше секунд на высоком битрейте.
+ */
+const PLAYING_BUFFER = { maxBufferLength: 120, maxMaxBufferLength: 180 };
+
+/**
+ * Запас до первого «play». Тайтл часто открывают почитать описание — не за
+ * чем качать минуты серии; пары сегментов хватает на мгновенный старт.
+ */
+const PRESTART_BUFFER = { maxBufferLength: 12, maxMaxBufferLength: 12 };
+
 @Component({
   selector: 'app-video-player',
   imports: [
@@ -288,11 +299,6 @@ export class VideoPlayerComponent {
   private readonly settings = inject(PlayerSettingsService);
   private readonly injector = inject(Injector);
   private readonly document = inject(DOCUMENT);
-  private readonly telemetry = inject(TelemetryService);
-  private measurement: PlayerMeasurement | null = null;
-  private readonly telemetryContext = signal<PlayerTelemetryContext | null>(null);
-  /** Сеанс, о выборе которого уже сообщили. */
-  private telemetrySelected = '';
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef).nativeElement;
 
   /** URL плеера Kodik: из него резолвится манифест. */
@@ -319,15 +325,9 @@ export class VideoPlayerComponent {
   readonly nativeOptions = input<readonly NativePlaybackOption[]>([]);
   /** Выбрана серия в плеере: родитель переключает на неё свой выбор. */
   readonly nativeSelection = output<string>();
-  /** Тайтл и серия для статистики плееров; null — серию не считаем. */
-  readonly telemetryTarget = input<PlayerTelemetryTarget | null>(null);
-  /** Родитель мог пересоздать тот же объект — новый сеанс от этого не нужен. */
-  private readonly telemetryKey = computed(() => this.telemetryTarget(), {
-    equal: (a, b) =>
-      a?.animeId === b?.animeId &&
-      a?.episode === b?.episode &&
-      a?.player === b?.player,
-  });
+  /** Отметки для меню серий (см. PlaybackPickerComponent). */
+  readonly watchedEpisodes = input<ReadonlySet<number>>(new Set());
+  readonly episodeProgress = input<ReadonlyMap<string, number>>(new Map());
   readonly pickerOpen = signal(false);
   readonly selectionPending = signal<string | null>(null);
   readonly selectionError = signal('');
@@ -354,6 +354,10 @@ export class VideoPlayerComponent {
    * эффектом: иначе сохранение позиции перезапускало бы воспроизведение.
    */
   readonly startPositionSecs = input(0);
+
+  /** Подпись кнопки другого источника в ошибке провайдера; `null` — его нет. */
+  readonly alternativeLabel = input<string | null>(null);
+  readonly alternativeRequested = output<void>();
 
   /**
    * Маршрут этой серии для отдельного окна. `null` — кнопки «оторвать» нет:
@@ -384,16 +388,20 @@ export class VideoPlayerComponent {
 
   readonly status = signal<PlayerStatus>('resolving');
   readonly errorText = signal('');
+  /** Резолв упал на стороне источника — есть смысл предложить другой. */
+  readonly providerFailed = signal(false);
   /** Ошибка из-за пропавшей сети: плеер сам продолжит, когда она вернётся. */
   readonly offline = signal(false);
 
   readonly requestedQuality = signal<number>(DEFAULT_QUALITY);
   readonly actualQuality = signal<number | null>(null);
-  /** У каждого источника свой потолок: 1080p бывает только у CDNVideoHub. */
-  readonly qualities = computed(() => qualitiesFor(this.iframeUrl()));
+  /** У каждого источника свой потолок: 1080p бывает у CDNVideoHub и AniLiberty. */
+  readonly qualities = computed(() =>
+    this.resolver.qualitiesFor(this.iframeUrl())
+  );
   /**
    * Запрошенное, но не выше потолка источника. Качество просмотра общее:
-   * выбранные на CDNVideoHub 1080p на Kodik означают «лучшее, что есть», а
+   * выбранные на AniLiberty 1080p на Kodik означают «лучшее, что есть», а
    * не повод писать, что 1080p у серии нет.
    */
   readonly effectiveQuality = computed(() =>
@@ -453,6 +461,9 @@ export class VideoPlayerComponent {
 
   /** Обратный отсчёт до следующей серии; null — отсчёта нет. */
   readonly autoNextSecs = signal<number | null>(null);
+  /** Отсчёт начался в эндинге, а не после конца серии: серия ещё идёт. */
+  readonly autoNextEarly = signal(false);
+  readonly autoNextEpisode = signal(false);
   /** Отсчёт до автопропуска опенинга; null — отсчёта нет. */
   readonly autoSkipSecs = signal<number | null>(null);
   readonly autoSkipOpening = signal(false);
@@ -711,8 +722,12 @@ export class VideoPlayerComponent {
   private theaterTimer: ReturnType<typeof setTimeout> | null = null;
   /** Опенинг этой серии уже пропущен или его решили смотреть — больше не предлагать. */
   private openingAutoHandled = false;
+  /** Позиция на прошлом тике: по ней видно, что серию проиграли через начало эндинга. */
+  private lastTickSecs: number | null = null;
   /** Место плеера на странице видно. */
   private hostVisible = true;
+  /** Хоть краем на экране: заставка вне экрана не крутится и не качает кадры. */
+  private readonly onScreen = signal(true);
   /** Мини-плеер закрыли крестиком — до возврата к плееру он не появится. */
   private miniDismissed = false;
   /** Попытки подряд вытащить поток после ошибки декодера. */
@@ -759,6 +774,7 @@ export class VideoPlayerComponent {
       typeof IntersectionObserver === 'function' && !IS_PLAYER_WINDOW
         ? new IntersectionObserver(
             ([entry]) => {
+              this.onScreen.set(entry.isIntersecting);
               this.hostVisible = entry.intersectionRatio >= MINI_VISIBLE_RATIO;
               this.updateMini();
             },
@@ -795,6 +811,11 @@ export class VideoPlayerComponent {
     void this.settings
       .getAutoSkipOpening()
       .then((enabled) => this.autoSkipOpening.set(enabled))
+      .catch(() => undefined);
+
+    void this.settings
+      .getAutoNextEpisode()
+      .then((enabled) => this.autoNextEpisode.set(enabled))
       .catch(() => undefined);
 
     void this.settings
@@ -846,42 +867,13 @@ export class VideoPlayerComponent {
     effect(() => {
       const cycling =
         this.showFrames() &&
+        this.onScreen() &&
         this.visibleFrames().length > 1 &&
         !this.reducedMotion;
 
       untracked(() =>
         cycling ? this.startFrameCycle() : this.stopFrameCycle()
       );
-    });
-
-    // Статистика плееров: каждая серия — свой сеанс. Эффект стоит раньше
-    // загрузки серии: её запуск уже пишется в измерение нового сеанса.
-    // Серия с диска считается отдельным провайдером `local`.
-    effect(() => {
-      this.iframeUrl();
-      const target = this.telemetryKey();
-
-      untracked(() => {
-        this.measurement?.close();
-        const context = this.telemetry.context(
-          target,
-          this.localPath() ? 'local' : undefined
-        );
-        this.telemetryContext.set(context);
-        this.measurement = this.telemetry.measurement(context);
-      });
-    });
-
-    // Выбор засчитывается, как только сбор разрешён: аккаунт мог ещё
-    // грузиться, когда серия открылась.
-    effect(() => {
-      const context = this.telemetryContext();
-      const enabled = this.telemetry.enabled();
-
-      if (context && enabled && this.telemetrySelected !== context.sessionId) {
-        this.telemetrySelected = context.sessionId;
-        untracked(() => this.telemetry.record(context, { name: 'selected' }));
-      }
     });
 
     // Источник выбирается на смене серии и дальше не меняется: докачавшаяся
@@ -899,6 +891,7 @@ export class VideoPlayerComponent {
         this.cancelAutoNext();
         this.cancelAutoSkip();
         this.openingAutoHandled = false;
+        this.lastTickSecs = null;
         this.skipHint.set(null);
         this.playedOnce.set(false);
         this.framePainted.set(false);
@@ -918,9 +911,6 @@ export class VideoPlayerComponent {
         // страницы и выбор серии в списке ставят её на паузу на постере.
         const resume = prepared?.resume ?? this.playNextOnLoad;
         this.playNextOnLoad = false;
-        if (resume) {
-          this.measurement?.request();
-        }
 
         if (prepared?.manifest) {
           // Поток уже получен, пока старая серия доигрывала, — подключаем
@@ -986,26 +976,7 @@ export class VideoPlayerComponent {
       })
       .catch(() => undefined);
 
-    const suspendMeasurement = (): void => {
-      this.measurement?.pause();
-      void this.telemetry.flush();
-    };
-    const onVisibilityChange = (): void => {
-      if (this.document.visibilityState === 'hidden') {
-        suspendMeasurement();
-      }
-    };
-    this.document.addEventListener('visibilitychange', onVisibilityChange);
-    this.document.defaultView?.addEventListener('pagehide', suspendMeasurement);
-
     inject(DestroyRef).onDestroy(() => {
-      this.measurement?.close();
-      void this.telemetry.flush();
-      this.document.removeEventListener('visibilitychange', onVisibilityChange);
-      this.document.defaultView?.removeEventListener(
-        'pagehide',
-        suspendMeasurement
-      );
       this.generation += 1;
       this.cancelSelection();
       visibility?.disconnect();
@@ -1197,6 +1168,7 @@ export class VideoPlayerComponent {
 
     this.stopWaitingForNetwork?.();
     this.offline.set(false);
+    this.providerFailed.set(false);
 
     // Старый поток гасится сразу, а не после резолва: его тикер успевал
     // обновить подпись уже чужой серии, перебивал этот резолв и подключал
@@ -1228,7 +1200,7 @@ export class VideoPlayerComponent {
       this.attach(manifest, positionSecs, iframeUrl, resume);
     } catch {
       if (token === this.generation && iframeUrl === this.iframeUrl()) {
-        this.fail(RESOLVE_FAILED_TEXT, 'resolve');
+        this.failResolve(iframeUrl);
       }
     }
   }
@@ -1287,7 +1259,7 @@ export class VideoPlayerComponent {
       await invoke('allow_playback', { path });
     } catch (error: unknown) {
       if (token === this.generation) {
-        this.fail(String(error), 'local');
+        this.fail(String(error));
       }
       return;
     }
@@ -1370,7 +1342,7 @@ export class VideoPlayerComponent {
     this.lastMediaRecoveryAt = 0;
 
     if (Hls.isSupported()) {
-      const hls = new Hls(this.hlsConfig(positionSecs));
+      const hls = new Hls(this.hlsConfig(positionSecs, resume));
       this.hls = hls;
 
       // События принадлежат экземпляру потока. Во время detach/destroy
@@ -1432,12 +1404,14 @@ export class VideoPlayerComponent {
     }
 
     this.fail(
-      'Этот вебвью не умеет ни MediaSource, ни HLS — воспроизведение недоступно.',
-      'unsupported'
+      'Этот вебвью не умеет ни MediaSource, ни HLS — воспроизведение недоступно.'
     );
   }
 
-  private hlsConfig(startPositionSecs: number): Partial<HlsConfig> {
+  private hlsConfig(
+    startPositionSecs: number,
+    playing: boolean
+  ): Partial<HlsConfig> {
     const base = Hls.DefaultConfig;
 
     // 403 означает протухшую подпись: она не оживёт, и ретраи вылились бы в
@@ -1469,12 +1443,7 @@ export class VideoPlayerComponent {
       // currentTime по MANIFEST_PARSED поздно и бесполезно: длительности ещё
       // нет, а hls.js всё равно начнёт загрузку со своей startPosition.
       startPosition: startPositionSecs > 0 ? startPositionSecs : -1,
-      // По умолчанию hls.js держит впереди лишь 30 с: на медленном CDN этого
-      // не хватает, чтобы пережить провал скорости без остановки. Две минуты
-      // вперёд — порядка 30–60 МБ при 720p; потолок в байтах поднят с 60 МБ,
-      // иначе он обрезал бы запас раньше секунд на высоком битрейте.
-      maxBufferLength: 120,
-      maxMaxBufferLength: 180,
+      ...(playing ? PLAYING_BUFFER : PRESTART_BUFFER),
       maxBufferSize: 200 * 1000 * 1000,
       // Позади хватит минуты на перемотку назад; без предела просмотренное
       // копилось бы в памяти до конца серии.
@@ -1552,9 +1521,18 @@ export class VideoPlayerComponent {
     this.pendingSeek = null;
   }
 
-  /** @param code причина для статистики плееров — без текста ошибки. */
-  private fail(message: string, code = 'playback'): void {
-    this.measurement?.error(code);
+  /**
+   * Резолв не удался. У AniLiberty ссылки готовые — упасть там может только
+   * бэк; у Kodik и CDNVideoHub это почти всегда сам источник, и тогда есть
+   * смысл предложить другой.
+   */
+  private failResolve(iframeUrl: string): void {
+    const provider = !this.resolver.isDirect(iframeUrl);
+    this.providerFailed.set(provider);
+    this.fail(provider ? PROVIDER_FAILED_TEXT : RESOLVE_FAILED_TEXT);
+  }
+
+  private fail(message: string): void {
     this.status.set('error');
     this.errorText.set(message);
     this.stopTicker();
@@ -1575,7 +1553,7 @@ export class VideoPlayerComponent {
         void this.refresh();
         return;
       case 'fail':
-        this.fail('Подпись потока истекла, обновить не удалось.', 'expired');
+        this.fail('Подпись потока истекла, обновить не удалось.');
         return;
       case 'propagate':
         if (!data.fatal) {
@@ -1598,11 +1576,11 @@ export class VideoPlayerComponent {
             void this.refresh();
             return;
           }
-          this.fail(NETWORK_FAILED_TEXT, 'network');
+          this.fail(NETWORK_FAILED_TEXT);
           return;
         }
 
-        this.fail(MEDIA_FAILED_TEXT, 'media');
+        this.fail(MEDIA_FAILED_TEXT);
     }
   }
 
@@ -1721,7 +1699,7 @@ export class VideoPlayerComponent {
           // Подпись ещё жива и поток играет: попробуем позже, а не уроним его.
           this.refreshAheadAfter = Date.now() + REFRESH_AHEAD_RETRY_MS;
         } else {
-          this.fail(RESOLVE_FAILED_TEXT, 'resolve');
+          this.failResolve(iframeUrl);
         }
       }
     } finally {
@@ -1756,9 +1734,12 @@ export class VideoPlayerComponent {
       const duration = Number.isFinite(video.duration) ? video.duration : 0;
 
       this.latch.rememberPosition(position);
+      const previous = this.lastTickSecs;
+      this.lastTickSecs = position;
       this.skipHint.set(this.skipController.visibleSkip(position, duration));
       if (!this.pickerOpen()) {
         this.updateAutoSkip(video.paused);
+        this.updateAutoNext(previous, position, duration, video.paused);
       }
 
       if (duration > 0 && duration - position <= PREFETCH_LEAD_SECS) {
@@ -1834,7 +1815,6 @@ export class VideoPlayerComponent {
     }
 
     this.position.set(video.currentTime);
-    this.measureTick(video);
 
     const ranges = video.buffered;
     for (let i = 0; i < ranges.length; i += 1) {
@@ -1845,51 +1825,6 @@ export class VideoPlayerComponent {
         this.bufferedTo.set(ranges.end(i));
         return;
       }
-    }
-  }
-
-  /**
-   * Время просмотра и режимы, в которых серия реально играла. Режим
-   * засчитывается раз за сеанс и только на идущем видео: включённый на паузе
-   * и тут же выключенный — не использование.
-   */
-  private measureTick(video: HTMLVideoElement): void {
-    const active = !video.paused && !this.buffering() && video.readyState >= 3;
-    this.measurement?.observe(
-      video.currentTime,
-      active,
-      video.seeking,
-      video.playbackRate
-    );
-    if (!active || video.seeking) {
-      return;
-    }
-
-    const quality = this.actualQuality();
-    if (quality) {
-      this.measurement?.feature('quality', String(quality), true);
-    }
-    if (this.upscaleActive()) {
-      this.measurement?.feature('upscale', this.upscaleMode(), true);
-    }
-    if (this.autoSkipOpening()) {
-      this.measurement?.feature('auto_skip', 'on', true);
-    }
-    if (this.isFullscreen()) {
-      this.measurement?.feature('fullscreen', 'on', true);
-    }
-    if (this.mini()) {
-      this.measurement?.feature('mini', 'on', true);
-    }
-    if (this.theater()) {
-      this.measurement?.feature('theater', 'on', true);
-    }
-    this.reportHardware();
-    if (
-      document.pictureInPictureElement === video ||
-      (video as WebKitVideo).webkitPresentationMode === 'picture-in-picture'
-    ) {
-      this.measurement?.feature('pip', 'on', true);
     }
   }
 
@@ -1922,7 +1857,7 @@ export class VideoPlayerComponent {
   onVideoError(): void {
     if (this.isLocal()) {
       if (this.status() !== 'error') {
-        this.fail('Не удалось воспроизвести файл с диска.', 'local');
+        this.fail('Не удалось воспроизвести файл с диска.');
       }
       return;
     }
@@ -1949,18 +1884,14 @@ export class VideoPlayerComponent {
       void this.refresh();
       return;
     }
-    this.fail(NETWORK_FAILED_TEXT, 'network');
+    this.fail(NETWORK_FAILED_TEXT);
   }
 
   onWaiting(): void {
-    if (!this.videoRef()?.nativeElement.paused) {
-      this.measurement?.waiting();
-    }
     this.buffering.set(true);
   }
 
   onPlaying(): void {
-    this.measurement?.playing();
     this.framePainted.set(true);
     this.buffering.set(false);
     // Нативный HLS о сегментах не сообщает: живость потока — то, что он играет.
@@ -1975,7 +1906,6 @@ export class VideoPlayerComponent {
       return;
     }
 
-    this.measurement?.pause();
     this.endHandled = true;
     this.buffering.set(false);
     this.paused.set(true);
@@ -1992,7 +1922,11 @@ export class VideoPlayerComponent {
   }
 
   onPlay(): void {
-    this.measurement?.request();
+    // До «play» поток копил лишь пару сегментов — теперь запас как при
+    // просмотре. hls.js перечитывает config на каждой проверке буфера.
+    if (this.hls) {
+      Object.assign(this.hls.config, PLAYING_BUFFER);
+    }
     // Повторный запуск после конца — новый просмотр, у которого будет свой конец.
     this.endHandled = false;
     this.paused.set(false);
@@ -2016,7 +1950,6 @@ export class VideoPlayerComponent {
   }
 
   onPause(): void {
-    this.measurement?.pause();
     this.buffering.set(false);
     this.paused.set(true);
     this.mediaSession.setPlaying(false);
@@ -2137,10 +2070,9 @@ export class VideoPlayerComponent {
     }
 
     if (video.paused) {
-      this.measurement?.request();
       this.hasStarted.set(true);
       this.flashPlay();
-      void video.play().catch(() => this.measurement?.error('play_rejected'));
+      void video.play().catch(() => undefined);
     } else {
       video.pause();
     }
@@ -2163,23 +2095,12 @@ export class VideoPlayerComponent {
       return;
     }
 
-    this.measurement?.feature('upscale', mode === 'off' ? 'off' : 'requested');
     // Выбор руками старше автоматики: дальше она в эту серию не вмешивается.
     this.fallback.release();
     this.upscaleNote.set('');
 
     this.upscaleMode.set(mode);
     await this.settings.setUpscale(mode);
-  }
-
-  /** Видеокарта и экран — раз за сеанс и только с согласием: запрос адаптера не бесплатный. */
-  private reportHardware(): void {
-    const measurement = this.measurement;
-    if (!measurement || !this.telemetry.enabled()) {
-      return;
-    }
-    measurement.feature('screen', screenClass(window), true);
-    void gpuClass().then((gpu) => measurement.feature('gpu', gpu, true));
   }
 
   private async applyUpscale(mode: UpscaleMode, ready: boolean): Promise<void> {
@@ -2200,13 +2121,6 @@ export class VideoPlayerComponent {
       return;
     }
 
-    // Один замер скорости на запуск: первые окна — разгон шейдеров и буфера,
-    // дальше ~10 секунд воспроизведения. Окна на паузе (`videoFps` = 0) не в счёт.
-    let perfWindows = 0;
-    let perfFps = 0;
-    let perfVideoFps = 0;
-    const perfDone = UPSCALE_PERF_WARMUP + UPSCALE_PERF_WINDOWS;
-
     try {
       const handle = await startUpscale({
         video,
@@ -2218,32 +2132,9 @@ export class VideoPlayerComponent {
           }
 
           this.upscaleStats.set(stats);
-          if (
-            stats.videoFps > 0 &&
-            ++perfWindows > UPSCALE_PERF_WARMUP &&
-            perfWindows <= perfDone
-          ) {
-            perfFps += stats.fps;
-            perfVideoFps += stats.videoFps;
-            if (perfWindows === perfDone) {
-              this.measurement?.feature(
-                'upscale_perf',
-                upscalePerf(mode, stats.sourceHeight, perfFps / perfVideoFps)
-              );
-            }
-          }
 
           const decision = this.fallback.observe(stats, performance.now());
           if (decision) {
-            // Откат случается раньше полного замера — без этого самые
-            // медленные запуски в статистику не попали бы вовсе.
-            if (perfWindows < perfDone && stats.videoFps > 0) {
-              perfWindows = perfDone;
-              this.measurement?.feature(
-                'upscale_perf',
-                upscalePerf(mode, stats.sourceHeight, stats.fps / stats.videoFps)
-              );
-            }
             // Настройку не переписываем: выбор человека остаётся прежним, а
             // на другой серии или другом качестве режим может и потянуть.
             this.upscaleNote.set(decision.reason);
@@ -2259,7 +2150,6 @@ export class VideoPlayerComponent {
           // Цикл уже остановился сам; здесь остаётся показать причину и
           // погасить канву, чтобы под ней снова было видно обычное видео.
           if (token === this.upscaleToken) {
-            this.measurement?.featureError('upscale');
             this.upscaleError.set(message);
             this.upscaleStats.set(null);
             this.upscalePreparing.set(false);
@@ -2277,7 +2167,6 @@ export class VideoPlayerComponent {
       // Молча откатываться нельзя: человек включил режим и должен понять,
       // почему картинка не изменилась.
       if (token === this.upscaleToken) {
-        this.measurement?.featureError('upscale');
         this.upscalePreparing.set(false);
         this.upscaleError.set(
           error instanceof Error ? error.message : 'Апскейл не запустился'
@@ -2381,7 +2270,6 @@ export class VideoPlayerComponent {
       return;
     }
 
-    this.measurement?.feature('quality', 'requested_' + quality);
     this.requestedQuality.set(quality);
     void this.settings.setQuality(quality).catch(() => undefined);
     void this.switchQuality(quality);
@@ -2401,6 +2289,7 @@ export class VideoPlayerComponent {
 
     try {
       const manifest = await this.resolver.changeManifestQuality(
+        iframeUrl,
         this.manifestUrl,
         quality
       );
@@ -2431,7 +2320,6 @@ export class VideoPlayerComponent {
     } catch {
       if (token === this.generation) {
         // Старый поток цел и играет — ронять его из-за качества незачем.
-        this.measurement?.error('quality');
         this.switchingQuality.set(false);
         this.requestedQuality.set(previous);
         void this.settings.setQuality(previous).catch(() => undefined);
@@ -2482,14 +2370,20 @@ export class VideoPlayerComponent {
    * После конца серии — отсчёт до следующей, а не мгновенный переход: человек
    * мог досматривать титры или собирался закрыть плеер.
    */
-  private startAutoNext(): void {
+  private startAutoNext(early = false): void {
     if (this.isLastEpisode() || this.pickerOpen()) {
       return;
     }
 
     this.cancelAutoNext();
+    this.autoNextEarly.set(early);
     this.autoNextSecs.set(AUTO_NEXT_SECS);
     this.autoNextTimer = setInterval(() => {
+      // В эндинге серия ещё идёт — на паузе отсчёт ждёт вместе с ней.
+      if (early && this.paused()) {
+        return;
+      }
+
       const left = (this.autoNextSecs() ?? 0) - 1;
 
       if (left > 0) {
@@ -2508,6 +2402,71 @@ export class VideoPlayerComponent {
     }
 
     this.autoNextSecs.set(null);
+    this.autoNextEarly.set(false);
+  }
+
+  /**
+   * Автопереход с начала эндинга, не дожидаясь титров до конца. Только когда
+   * серию проиграли через это начало: перемотка в титры или открытие серии с
+   * позиции в них отсчёт не запускают — туда пришли смотреть.
+   */
+  private updateAutoNext(
+    previous: number | null,
+    position: number,
+    duration: number,
+    paused: boolean
+  ): void {
+    const from = this.skipController.autoNextFromSecs(duration);
+
+    if (this.autoNextEarly()) {
+      // Отмотали назад из эндинга — серию смотрят дальше.
+      if (from !== null && position < from) {
+        this.cancelAutoNext();
+      }
+      return;
+    }
+
+    if (
+      from === null ||
+      previous === null ||
+      !this.autoNextEpisode() ||
+      this.autoNextTimer !== null ||
+      paused ||
+      !(
+        previous < from &&
+        from <= position &&
+        position - previous <= PLAY_THROUGH_MAX_STEP_SECS
+      )
+    ) {
+      return;
+    }
+
+    this.startAutoNext(true);
+  }
+
+  /** «Переходить всегда»: включить автопереход и перейти уже сейчас. */
+  alwaysGoNext(): void {
+    this.setAutoNextEpisode(true);
+    this.goNext();
+  }
+
+  /** «Больше не переходить» из отсчёта: выключить и досмотреть эту серию. */
+  disableAutoNext(): void {
+    this.setAutoNextEpisode(false);
+  }
+
+  toggleAutoNextEpisode(): void {
+    this.setAutoNextEpisode(!this.autoNextEpisode());
+  }
+
+  private setAutoNextEpisode(enabled: boolean): void {
+    this.autoNextEpisode.set(enabled);
+    void this.settings.setAutoNextEpisode(enabled).catch(() => undefined);
+
+    // Отсчёт после конца серии от настройки не зависит — гасится только ранний.
+    if (!enabled && this.autoNextEarly()) {
+      this.cancelAutoNext();
+    }
   }
 
   private showEpisodeToast(): void {
@@ -2583,9 +2542,6 @@ export class VideoPlayerComponent {
 
   /** Опенинг перематывается внутри серии, конец — уводит на следующую. */
   applySkip(hint: SkipHint): void {
-    this.measurement?.feature(
-      hint.kind === 'opening' ? 'skip_opening' : 'skip_ending'
-    );
     if (hint.kind === 'opening') {
       this.openingAutoHandled = true;
       this.cancelAutoSkip();
@@ -2673,7 +2629,6 @@ export class VideoPlayerComponent {
 
   private setAutoSkipOpening(enabled: boolean): void {
     this.autoSkipOpening.set(enabled);
-    this.measurement?.feature('auto_skip', enabled ? 'on' : 'off');
     void this.settings.setAutoSkipOpening(enabled).catch(() => undefined);
 
     if (!enabled) {

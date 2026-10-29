@@ -139,6 +139,8 @@
       >
         <app-playback-picker
           [options]="nativeOptions()"
+          [watched]="watchedEpisodes()"
+          [progress]="episodeProgress()"
           [currentUrl]="iframeUrl()"
           [pendingUrl]="selectionPending()"
           [error]="selectionError()"
@@ -161,6 +163,11 @@
       <button class="ghost ghost--outlined" type="button" (click)="retry()">
         Повторить
       </button>
+      @if (alternativeLabel() && providerFailed()) {
+        <button class="ghost ghost--outlined" type="button" (click)="alternativeRequested.emit()">
+          {{ alternativeLabel() }}
+        </button>
+      }
     </div>
   } @else {
     @if ((buffering() && !paused()) || switchingQuality()) {
@@ -256,9 +263,18 @@
           Следующая серия через <strong>{{ secs }}</strong>
         </span>
         <span class="autonext__actions">
-          <button class="ghost ghost--outlined" type="button" (click)="cancelAutoNext(); player.focus({ preventScroll: true })">
-            Отмена
-          </button>
+          @if (autoNextEarly()) {
+            <button class="ghost ghost--outlined" type="button" (click)="disableAutoNext(); player.focus({ preventScroll: true })">
+              Больше не переходить
+            </button>
+            <button class="ghost ghost--outlined" type="button" (click)="cancelAutoNext(); player.focus({ preventScroll: true })">
+              Досмотреть
+            </button>
+          } @else {
+            <button class="ghost ghost--outlined" type="button" (click)="cancelAutoNext(); player.focus({ preventScroll: true })">
+              Отмена
+            </button>
+          }
           <button class="autonext__go" type="button" (click)="goNext(); player.focus({ preventScroll: true })">
             Смотреть
             <span class="autonext__ring" aria-hidden="true">
@@ -271,6 +287,7 @@
                   r="10.5"
                   pathLength="100"
                   [style.animation-duration.s]="autoNextTotalSecs"
+                  [style.animation-play-state]="autoNextEarly() && paused() ? 'paused' : null"
                 />
               </svg>
               <tui-icon icon="@tui.chevrons-right" />
@@ -310,6 +327,14 @@
             (click)="alwaysSkipOpening(hint); player.focus({ preventScroll: true })"
           >
             Пропускать всегда
+          </button>
+        } @else if (hint.kind === 'ending' && !autoNextEpisode()) {
+          <button
+            class="skip skip--secondary"
+            type="button"
+            (click)="alwaysGoNext(); player.focus({ preventScroll: true })"
+          >
+            Переходить всегда
           </button>
         }
         <button
@@ -448,23 +473,38 @@
           <span class="time__total">/ {{ formatTime(duration()) }}</span>
         </span>
 
-        @if (skips().opening !== undefined) {
-          <button
-            class="ghost ghost--icon"
-            type="button"
-            aria-label="Автопропуск опенинга"
-            [class.ghost--active]="autoSkipOpening()"
-            [attr.aria-pressed]="autoSkipOpening()"
-            [attr.data-tip]="
-              autoSkipOpening()
-                ? 'Автопропуск опенинга включён'
-                : 'Автопропуск опенинга выключен'
-            "
-            (click)="toggleAutoSkipOpening()"
-          >
-            <tui-icon icon="@tui.chevrons-right" />
-          </button>
-        }
+        <!-- Настройка общая на все серии: видна и там, где у серии нет тайминга опенинга. -->
+        <button
+          class="ghost ghost--icon"
+          type="button"
+          aria-label="Автопропуск опенинга"
+          [class.ghost--active]="autoSkipOpening()"
+          [attr.aria-pressed]="autoSkipOpening()"
+          [attr.data-tip]="
+            autoSkipOpening()
+              ? 'Автопропуск опенинга включён'
+              : 'Автопропуск опенинга выключен'
+          "
+          (click)="toggleAutoSkipOpening()"
+        >
+          <tui-icon icon="@tui.chevrons-right" />
+        </button>
+
+        <button
+          class="ghost ghost--icon"
+          type="button"
+          aria-label="Автопереход к следующей серии"
+          [class.ghost--active]="autoNextEpisode()"
+          [attr.aria-pressed]="autoNextEpisode()"
+          [attr.data-tip]="
+            autoNextEpisode()
+              ? 'Автопереход к следующей серии включён'
+              : 'Автопереход к следующей серии выключен'
+          "
+          (click)="toggleAutoNextEpisode()"
+        >
+          <tui-icon icon="@tui.list-end" />
+        </button>
 
         @if (upscaleSupported) {
           <details class="quality upscale" appAutoCloseMenu>
@@ -481,7 +521,12 @@
                   [class.quality__option--active]="upscaleMode() === option"
                   (click)="changeUpscale(option)"
                 >
-                  {{ upscaleLabels[option].title }}
+                  <span class="quality__title">
+                    {{ upscaleLabels[option].title }}
+                    @if (upscaleLabels[option].experimental) {
+                      <span class="quality__tag">Экспериментальная</span>
+                    }
+                  </span>
                   <span class="quality__hint">{{ upscaleLabels[option].hint }}</span>
                 </button>
               }

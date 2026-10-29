@@ -111,7 +111,8 @@
           [nextEpisodeLabel]="nextEpisodeLabel()"
           [nextIframeUrl]="nextIframeUrl()"
           [nativeOptions]="nativeOptions()"
-          [telemetryTarget]="telemetryTarget()"
+          [watchedEpisodes]="watched()"
+          [episodeProgress]="episodeProgress()"
           [frames]="frames()"
           [nowPlaying]="{
             title: anime().title,
@@ -128,6 +129,8 @@
           (nextEpisode)="goToNextEpisode()"
           (previousEpisode)="goToPreviousEpisode()"
           (nativeSelection)="selectFromPlayer($event)"
+          [alternativeLabel]="alternativeLabel()"
+          (alternativeRequested)="switchToAlternative()"
           (playbackPaused)="saveAndFlush($event)"
           (playbackStarted)="markWatched($event)"
           (progress)="saveProgress($event)"

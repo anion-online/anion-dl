@@ -22,7 +22,7 @@ import { UPSCALE_LABELS, type UpscaleMode, type UpscaleStats } from './upscale';
 export const FALLBACK_MODE: UpscaleMode = 'ca';
 
 /** Режимы, у которых есть куда падать. */
-const HEAVY: readonly UpscaleMode[] = ['compact'];
+const HEAVY: readonly UpscaleMode[] = ['compact-lite', 'compact', 'details'];
 
 export interface FallbackOptions {
   /** Доля от частоты видео, ниже которой конвейер считается не тянущим. */

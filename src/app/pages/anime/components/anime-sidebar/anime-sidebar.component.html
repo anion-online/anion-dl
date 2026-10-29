@@ -47,6 +47,7 @@
   <app-subscribe-button
     [animeId]="anime().animeId"
     [statusAlias]="anime().animeStatus.alias"
+    (failed)="error.set($event)"
   />
 
   @if (error()) {

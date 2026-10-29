@@ -29,6 +29,8 @@ const QUALITY_KEY = 'quality';
 const SOURCE_KEY = 'source';
 /** Опенинг пропускается сам — после отсчёта, который можно отменить. */
 const AUTO_SKIP_OPENING_KEY = 'autoSkipOpening';
+/** Переходить на следующую серию с начала эндинга, не дожидаясь конца. */
+const AUTO_NEXT_EPISODE_KEY = 'autoNextEpisode';
 
 /**
  * Только качества из меню: старое или поправленное руками значение — мимо.
@@ -115,6 +117,15 @@ export class PlayerSettingsService {
 
   async setAutoSkipOpening(enabled: boolean): Promise<void> {
     await this.store.set(AUTO_SKIP_OPENING_KEY, enabled);
+    await this.store.save();
+  }
+
+  async getAutoNextEpisode(): Promise<boolean> {
+    return (await this.store.get<unknown>(AUTO_NEXT_EPISODE_KEY)) === true;
+  }
+
+  async setAutoNextEpisode(enabled: boolean): Promise<void> {
+    await this.store.set(AUTO_NEXT_EPISODE_KEY, enabled);
     await this.store.save();
   }
 }

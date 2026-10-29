@@ -26,3 +26,11 @@ describe('qualityOf', () => {
     expect(qualityOf('https://cdn/stream/manifest.m3u8')).toBeNull();
   });
 });
+
+test('reads the quality of an AniLiberty playlist from its directory', () => {
+  expect(
+    qualityOf(
+      'https://cache.libria.fun/videos/media/ts/9542/1/720/f2dc34029cefbeb93e9fbb4c5cfbfa5d.m3u8'
+    )
+  ).toBe(720);
+});

@@ -17,7 +17,6 @@ import {
   type PlaybackProgress,
   VideoPlayerComponent,
 } from '../../player/video-player.component';
-import type { PlayerTelemetryTarget } from '../../telemetry/telemetry.types';
 import { PlayerWindowService } from '../../windows/player-window.service';
 
 /**
@@ -88,14 +87,6 @@ export class PlayComponent {
     const list = this.siblings();
     const index = list.findIndex((item) => item.id === this.taskId());
     return index >= 0 ? (list[index + 1] ?? null) : null;
-  });
-
-  /** Серия с диска: плеер запишет её провайдером `local`. */
-  readonly telemetryTarget = computed<PlayerTelemetryTarget | null>(() => {
-    const task = this.task();
-    return task
-      ? { animeId: task.animeId, episode: Number(task.episode), player: '' }
-      : null;
   });
 
   readonly detachRoute = computed(

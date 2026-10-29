@@ -117,6 +117,15 @@ export class CommentsComponent {
     }
   }
 
+  /** Упала первая страница — грузим заново; упала догрузка — повторяем её. */
+  retry(): void {
+    if (this.comments().length === 0) {
+      void this.reload(this.animeId(), this.sort());
+    } else {
+      void this.loadMore();
+    }
+  }
+
   async loadMore(): Promise<void> {
     if (this.isLoading()) {
       return;
@@ -124,6 +133,7 @@ export class CommentsComponent {
 
     const token = this.generation;
     this.isLoading.set(true);
+    this.errorText.set('');
 
     try {
       const page = await this.api.getComments(this.animeId(), {

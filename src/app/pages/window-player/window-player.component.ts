@@ -14,6 +14,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 
 import { AnimeService } from '../../api/anime.service';
 import type { Video } from '../../api/anime.types';
+import { AnilibriaService, withAnilibria } from '../../api/anilibria.service';
 import { CvhService } from '../../api/cvh.service';
 import { DownloadService } from '../../api/download.service';
 import { RemoteWatchProgressService } from '../../api/remote-watch-progress.service';
@@ -21,8 +22,10 @@ import { UserService } from '../../api/user.service';
 import { isCvhDubbing, isKodik } from '../../api/video-source';
 import { WatchProgressService } from '../../api/watch-progress.service';
 import { type NowPlaying, sameNowPlaying } from '../../player/media-session';
-import type { NativePlaybackOption } from '../../player/native-playback-option';
-import type { PlayerTelemetryTarget } from '../../telemetry/telemetry.types';
+import {
+  type NativePlaybackOption,
+  progressKey,
+} from '../../player/native-playback-option';
 import { orderPreviewFrames } from '../../player/preview-frames';
 import {
   type PlaybackProgress,
@@ -47,6 +50,7 @@ import {
 export class WindowPlayerComponent {
   private readonly api = inject(AnimeService);
   private readonly cvh = inject(CvhService);
+  private readonly anilibria = inject(AnilibriaService);
   private readonly downloads = inject(DownloadService);
   private readonly localProgress = inject(WatchProgressService);
   private readonly remoteProgress = inject(RemoteWatchProgressService);
@@ -88,16 +92,37 @@ export class WindowPlayerComponent {
     loader: ({ params }) => this.cvh.videosFor(params.malId),
   });
 
+  /**
+   * Релиз AniLiberty — серии озвучки AniLibria с его CDN, как на странице
+   * тайтла. Окну CDNVideoHub он не нужен.
+   */
+  private readonly anilibriaRelease = resource({
+    params: () => {
+      const dubbing = this.dubbing();
+      const shikimoriId = this.animeData.value()?.remoteIds?.shikimoriId;
+
+      return shikimoriId && !(dubbing && isCvhDubbing(dubbing))
+        ? { shikimoriId }
+        : undefined;
+    },
+    loader: ({ params }) => this.anilibria.release(params.shikimoriId),
+  });
+
   readonly taskItem = computed(
     () => this.downloads.tasks().find((item) => item.id === this.task()) ?? null
   );
 
-  /** Серии, которые приложение умеет играть: Kodik и CDNVideoHub. */
+  /** Серии, которые приложение умеет играть: Kodik с AniLiberty и CDNVideoHub. */
   private readonly videos = computed<readonly Video[]>(() => {
     const dubbing = this.dubbing();
+    const anime = this.animeData.value();
 
     return [
-      ...(this.animeData.value()?.videos.filter(isKodik) ?? []),
+      ...withAnilibria(
+        anime?.videos.filter(isKodik) ?? [],
+        anime?.remoteIds?.shikimoriId ?? 0,
+        this.anilibriaRelease.value() ?? null
+      ),
       ...(this.cvhVideos.value() ?? []),
     ]
       .filter((video) => !dubbing || video.data.dubbing === dubbing)
@@ -113,6 +138,7 @@ export class WindowPlayerComponent {
     return (
       this.animeData.hasValue() &&
       !this.cvhVideos.isLoading() &&
+      !this.anilibriaRelease.isLoading() &&
       this.localProgress.isInitialized() &&
       this.diskChecked()
     );
@@ -236,52 +262,43 @@ export class WindowPlayerComponent {
     }
 
     const onDisk = this.onDisk();
-    const records = this.localProgress
-      .records()
-      .filter((record) => record.animeId === animeId);
-    const watched = new Set(
-      this.remoteProgress.episodesFor(animeId, this.users.user()?.id ?? null)
-    );
 
-    return this.videos().map((video) => {
-      const episode = Number(video.number);
-      const record = records.find(
-        (item) =>
-          item.episode === episode && item.dubbing === video.data.dubbing
-      );
-      const progress =
-        record && record.durationSecs > 0
-          ? record.finished
-            ? 100
-            : Math.min((record.positionSecs / record.durationSecs) * 100, 100)
-          : 0;
-
-      return {
-        id: String(video.videoId),
-        episode,
-        dubbing: video.data.dubbing,
-        iframeUrl: video.iframeUrl,
-        skips: video.skips,
-        local: onDisk.has(video.videoId),
-        watched: watched.has(episode),
-        progress,
-      };
-    });
+    return this.videos().map((video) => ({
+      id: String(video.videoId),
+      episode: Number(video.number),
+      dubbing: video.data.dubbing,
+      iframeUrl: video.iframeUrl,
+      skips: video.skips,
+      local: onDisk.has(video.videoId),
+    }));
   });
 
-  /** Скачанная задача играет с диска: плеер запишет её провайдером `local`. */
-  readonly telemetryTarget = computed<PlayerTelemetryTarget | null>(() => {
-    const task = this.taskItem();
-    if (task) {
-      return { animeId: task.animeId, episode: Number(task.episode), player: '' };
+  /** Отметки меню серий — отдельно от каталога, см. PlaybackPickerComponent. */
+  readonly watchedEpisodes = computed<ReadonlySet<number>>(() => {
+    const animeId = this.animeData.value()?.animeId;
+    return animeId === undefined
+      ? new Set()
+      : new Set(
+          this.remoteProgress.episodesFor(animeId, this.users.user()?.id ?? null)
+        );
+  });
+
+  readonly episodeProgress = computed<ReadonlyMap<string, number>>(() => {
+    const animeId = this.animeData.value()?.animeId;
+    const progress = new Map<string, number>();
+
+    for (const record of this.localProgress.records()) {
+      if (record.animeId === animeId && record.durationSecs > 0) {
+        progress.set(
+          progressKey(record.dubbing, record.episode),
+          record.finished
+            ? 100
+            : Math.min((record.positionSecs / record.durationSecs) * 100, 100)
+        );
+      }
     }
 
-    const animeId = this.animeData.value()?.animeId;
-    const episode = this.selected();
-
-    return animeId !== undefined && episode
-      ? { animeId, episode: Number(episode.number), player: episode.data.player }
-      : null;
+    return progress;
   });
 
   readonly isLastEpisode = computed(() => {

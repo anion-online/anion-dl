@@ -20,6 +20,7 @@ import {
   DownloadService,
   QUALITIES,
 } from '../../../../api/download.service';
+import { isAnilibriaLocator } from '../../../../api/anilibria.service';
 import { isCvhDubbing } from '../../../../api/video-source';
 import { CVH_QUALITIES } from '../../../../player/manifest-quality';
 
@@ -79,9 +80,13 @@ export class DownloadsTabComponent {
   /**
    * Качества выбранного источника. 1080p предлагается только там, где он
    * бывает: у Kodik его почти нет, и пункт обещал бы то, чего не будет.
+   * Озвучка AniLibria с релизом AniLiberty идёт с его CDN, там 1080p есть.
    */
   readonly qualities = computed<readonly number[]>(() =>
-    isCvhDubbing(this.dubbing()) ? CVH_QUALITIES : QUALITIES
+    isCvhDubbing(this.dubbing()) ||
+    this.episodes().some((video) => isAnilibriaLocator(video.iframeUrl))
+      ? CVH_QUALITIES
+      : QUALITIES
   );
 
   /** Сохранённое качество — общее для источников и может быть выше потолка. */

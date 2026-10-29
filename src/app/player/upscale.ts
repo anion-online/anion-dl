@@ -14,8 +14,10 @@ import type { Anime4KPipeline } from 'anime4k-webgpu';
  * и режим «Выключен» по умолчанию.
  *
  * Пресеты — из форка anion-online/anionWebGPU, общего с фронтом `anion`.
- * «Детали» (`compact`) идут на его ядре: собственный WGSL-рендерер anion-dl
- * переехал туда и там дальше ускорен и дообучен.
+ * Режимы `c`/`ca` — шейдеры Anime4K, `compact-lite` и `compact` («Сильное»,
+ * «Максимальное») — своя нейросеть, обученная с нуля под порчу Kodik (форк,
+ * этапы Э19–Э20), `details` («Детали») — AnimeJaNai V2 SuperUltraCompact,
+ * дообученная под Kodik (Э10–Э17).
  */
 
 /**
@@ -28,7 +30,8 @@ import type { Anime4KPipeline } from 'anime4k-webgpu';
  * `b`/`bb` убраны по другой причине: они восстанавливают замыленный источник, а
  * у Kodik картинка не замылена, а пережата — эти режимы её только размазывали.
  */
-export const UPSCALE_MODES = ['off', 'c', 'ca', 'compact'] as const;
+/** По нарастанию силы и нагрузки; «Детали» — альтернатива «Максимальному» той же цены. */
+export const UPSCALE_MODES = ['off', 'c', 'ca', 'compact-lite', 'compact', 'details'] as const;
 
 export type UpscaleMode = (typeof UPSCALE_MODES)[number];
 
@@ -39,21 +42,32 @@ export interface UpscaleLabel {
   title: string;
   /** Что пользователь получит и чем заплатит — без терминов Anime4K. */
   hint: string;
+  /** Своя нейросеть, ещё обкатывается: в меню — с пометкой. */
+  experimental?: boolean;
 }
 
 export const UPSCALE_LABELS: Record<UpscaleMode, UpscaleLabel> = {
-  off: { title: 'Выключено', hint: 'Картинка как есть' },
-  c: {
-    title: 'Чёткость',
-    hint: 'Повышает резкость, почти не нагружает',
-  },
+  off: { title: 'Без улучшений', hint: 'Видео как есть' },
+  c: { title: 'Лёгкое', hint: 'Чётче линии · нагрузка низкая' },
   ca: {
-    title: 'Чёткость+',
-    hint: 'Ещё и убирает артефакты сжатия, нагрузка чуть выше',
+    title: 'С очисткой',
+    hint: 'Чётче линии, меньше артефактов · нагрузка средняя',
   },
+  'compact-lite': {
+    title: 'Сильное',
+    hint: 'Нейросеть Anion U32-1: чистит сжатие · нагрузка высокая',
+    experimental: true,
+  },
+  // Ключ `compact` до Э19 значил «Детали»: сохранённый тогда выбор перешёл
+  // на Anion U48. Вернувшимся «Деталям» — свой ключ `details`.
   compact: {
+    title: 'Максимальное',
+    hint: 'Нейросеть Anion U48-3: лучшее качество · нужна мощная видеокарта',
+    experimental: true,
+  },
+  details: {
     title: 'Детали',
-    hint: 'Дорисовывает детали, а не только режет артефакты. Тяжёлый: на 720p может не успевать',
+    hint: 'Нейросеть на основе AnimeJaNai: дорисовывает детали · нужна мощная видеокарта',
   },
 };
 
@@ -158,29 +172,42 @@ interface BuildContext {
 /** Собирает пресет режима под размеры кадра. */
 type PresetFactory = (ctx: BuildContext) => Anime4KPipeline;
 
-/** Веса «Деталей» — `model.json` + `weights.bin` из `scripts/compact-to-wgsl.py`. */
+/** Веса нейросети — `model.json` + `weights.bin` (anionWebGPU, `training/to_wgsl.py`). */
 type CompactModel = ConstructorParameters<
   typeof import('anime4k-webgpu/presets/ModeCompact').ModeCompact
 >[0]['model'];
 
-/**
- * Каталог весов «Деталей» в `src/assets/upscale`. `janai-v2-kodik-mix75` —
- * поэлементная смесь 0.75 · `janai-v2` + 0.25 · ink8 (AnimeJaNai V2 SUC,
- * дообученная под порчу Kodik с весом штриха; anionWebGPU, Э11, Э13, Э17):
- * ink8 гасит мошкару x264, но мажет фоновую текстуру — кирпичи, листву;
- * смесь возвращает текстуру почти как у исходной, а шума меньше. Исходная
- * `janai-v2` оставлена для отката. Те же веса — у фронта.
- */
-const COMPACT_WEIGHTS = 'janai-v2-kodik-mix75';
+type CompactMode = Extract<ShaderMode, 'compact' | 'compact-lite' | 'details'>;
 
-/** Веса «Деталей» (~90 КБ) — из ассетов, на первом включении. */
-async function loadCompactModel(): Promise<CompactModel> {
+/**
+ * Каталоги весов нейросети в `src/assets/upscale`, те же, что у фронта.
+ *
+ * `anion-u*` — сети на сетке вдвое реже кадра (`SRVGGNetCompactU`), обученные
+ * с нуля (anionWebGPU, Э19–Э20). Имя — `anion-u<каналы>-<версия>`.
+ * `anion-u48-3` («Максимальное», 7 свёрток) — по цене кадра как «Детали»,
+ * цель — составной учитель по полосам частот. `anion-u32-1` («Сильное»,
+ * 10 свёрток) — на треть дешевле. Учителя и лицензия — в `LICENSE.txt`
+ * рядом с весами.
+ *
+ * `janai-v2-kodik-mix75` («Детали») — поэлементная смесь 0.75 · `janai-v2` +
+ * 0.25 · ink8 (Э17): ink8 гасит мошкару x264, но мажет фоновую текстуру,
+ * смесь её возвращает. Исходная `janai-v2` оставлена для отката.
+ */
+const COMPACT_WEIGHTS: Record<CompactMode, string> = {
+  compact: 'anion-u48-3',
+  'compact-lite': 'anion-u32-1',
+  details: 'janai-v2-kodik-mix75',
+};
+
+/** Веса нейросети (90–340 КБ) — из ассетов, на первом включении. */
+async function loadCompactModel(mode: CompactMode): Promise<CompactModel> {
+  const weights = COMPACT_WEIGHTS[mode];
   const [metaResponse, weightsResponse] = await Promise.all([
-    fetch(`/assets/upscale/${COMPACT_WEIGHTS}/model.json`),
-    fetch(`/assets/upscale/${COMPACT_WEIGHTS}/weights.bin`),
+    fetch(`/assets/upscale/${weights}/model.json`),
+    fetch(`/assets/upscale/${weights}/weights.bin`),
   ]);
   if (!metaResponse.ok || !weightsResponse.ok) {
-    throw new Error('Не удалось загрузить нейросеть для «Деталей»');
+    throw new Error('Не удалось загрузить нейросеть улучшения');
   }
   return {
     meta: (await metaResponse.json()) as CompactModel['meta'],
@@ -193,24 +220,43 @@ async function loadCompactModel(): Promise<CompactModel> {
 // только точные повторы, картинка та же.
 //
 // После x264 точных повторов почти нет: тот же рисунок отличается шумом
-// сжатия до ~16 уровней. «Деталям» — порог 16: пропускается ~25% кадров
+// сжатия до ~16 уровней. Нейросети — порог 16: пропускается ~25% кадров
 // Kodik; затемнения ворота сами не пропускают (средний сдвиг кадра).
 // Цвет «Детали» берут не из сети, а из сглаженного кадра (по умолчанию
 // пресета): сеть рисовала цветовые блоки сжатия 4:2:0 пятнами.
 const COMPACT_UNCHANGED_THRESHOLD = 16;
 
 /**
- * Ядро «Деталей» по движку вебвью. На macOS и Linux это WebKit (WKWebView,
- * WebKitGTK): там Winograd (`wino`) на 12% быстрее `fast`, а в Chromium
- * (WebView2 на Windows) — на 23% медленнее. Разрыв не в нашем коде: WebKit
- * исполняет то же ядро в 1.8 раза медленнее Chrome. Замеры — anionWebGPU,
- * docs/PLAN.md, этап Э18.
+ * Ядро нейросети по движку вебвью. У сетей половинной сетки (`anion-u*`)
+ * Winograd (`wino`) нет — только `fast`. «Деталям» на WebKit (WKWebView,
+ * WebKitGTK) `wino` на 12% быстрее `fast`, а в Chromium (WebView2 на
+ * Windows) — на 23% медленнее. WebKit исполняет то же ядро в 1.8 раза
+ * медленнее Chrome (anionWebGPU, Э18) — там «Сильное» уместнее
+ * «Максимального».
  */
-function compactKernel(): 'wino' | 'fast' {
+function compactKernel(mode: CompactMode): 'wino' | 'fast' {
+  if (mode !== 'details') return 'fast';
   const agent = navigator.userAgent;
-  return /AppleWebKit/.test(agent) && !/Chrome|Chromium|Edg\//.test(agent)
+  return /AppleWebKit/.test(agent) && !/Chrome\/|Chromium\/|Edg\//.test(agent)
     ? 'wino'
     : 'fast';
+}
+
+function compactPreset(mode: CompactMode): () => Promise<PresetFactory> {
+  return async () => {
+    const [{ ModeCompact }, model] = await Promise.all([
+      import('anime4k-webgpu/presets/ModeCompact'),
+      loadCompactModel(mode),
+    ]);
+    return (ctx) =>
+      new ModeCompact({
+        ...ctx,
+        model,
+        kernel: compactKernel(mode),
+        skipUnchanged: true,
+        unchangedThreshold: COMPACT_UNCHANGED_THRESHOLD,
+      });
+  };
 }
 
 const PRESETS: Record<ShaderMode, () => Promise<PresetFactory>> = {
@@ -222,21 +268,13 @@ const PRESETS: Record<ShaderMode, () => Promise<PresetFactory>> = {
     const { ModeCA } = await import('anime4k-webgpu/presets/ModeCA');
     return (ctx) => new ModeCA({ ...ctx, skipUnchanged: true });
   },
-  compact: async () => {
-    const [{ ModeCompact }, model] = await Promise.all([
-      import('anime4k-webgpu/presets/ModeCompact'),
-      loadCompactModel(),
-    ]);
-    return (ctx) =>
-      new ModeCompact({
-        ...ctx,
-        model,
-        kernel: compactKernel(),
-        skipUnchanged: true,
-        unchangedThreshold: COMPACT_UNCHANGED_THRESHOLD,
-      });
-  },
+  compact: compactPreset('compact'),
+  'compact-lite': compactPreset('compact-lite'),
+  details: compactPreset('details'),
 };
+
+/** Режимам на нейросети нужна половинная точность в шейдерах. */
+const NEEDS_F16: ReadonlySet<ShaderMode> = new Set(['compact', 'compact-lite', 'details']);
 
 /**
  * Собирает цепочку конвейеров режима.
@@ -268,7 +306,9 @@ async function requestDevice(
   }
 
   if (!adapter.features.has('shader-f16')) {
-    throw new Error('Видеокарта не поддерживает половинную точность в шейдерах');
+    throw new Error(
+      'Видеокарта не поддерживает этот режим: нет половинной точности в шейдерах'
+    );
   }
 
   const limits = adapter.limits as unknown as Record<string, number | undefined>;
@@ -321,7 +361,7 @@ export async function startUpscale({
     throw new Error('Видеокарта не отдала адаптер WebGPU');
   }
 
-  const device = await requestDevice(adapter, mode === 'compact');
+  const device = await requestDevice(adapter, NEEDS_F16.has(mode));
   const context = canvas.getContext('webgpu');
   if (!context) {
     throw new Error('Канва не отдала контекст WebGPU');

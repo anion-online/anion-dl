@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 
 import {
+  AUTO_NEXT_TAIL_SECONDS,
   DEFAULT_WINDOW_SECONDS,
   SkipController,
   TAIL_SECONDS,
@@ -97,5 +98,16 @@ describe('концовка', () => {
     expect(skip.visibleSkip(99, 0)).toBeNull();
     expect(skip.visibleSkip(100, 0)?.kind).toBe('ending');
     expect(skip.visibleSkip(190, 0)).toBeNull();
+  });
+
+  test('allows the early next episode only from an ending close to the end', () => {
+    const tail = 1420 - AUTO_NEXT_TAIL_SECONDS;
+    expect(new SkipController({ ending: 1300 }).autoNextFromSecs(1420)).toBe(1300);
+    expect(new SkipController({ ending: tail }).autoNextFromSecs(1420)).toBe(tail);
+    expect(new SkipController({ ending: tail - 1 }).autoNextFromSecs(1420)).toBeNull();
+    expect(new SkipController({ ending: 5000 }).autoNextFromSecs(1420)).toBeNull();
+    expect(new SkipController({}).autoNextFromSecs(1420)).toBeNull();
+    expect(new SkipController({ ending: 1300 }).autoNextFromSecs(0)).toBeNull();
+    expect(new SkipController({ ending: 1300 }, true).autoNextFromSecs(1420)).toBeNull();
   });
 });

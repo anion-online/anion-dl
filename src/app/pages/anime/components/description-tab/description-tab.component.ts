@@ -24,6 +24,7 @@ import {
   RemoteWatchProgressService,
 } from '../../../../api/remote-watch-progress.service';
 import { UserService } from '../../../../api/user.service';
+import { isAnilibriaLocator } from '../../../../api/anilibria.service';
 import { isCvhDubbing, voiceOf } from '../../../../api/video-source';
 import {
   resumeEpisodeFor,
@@ -33,8 +34,10 @@ import {
   type PlaybackProgress,
   VideoPlayerComponent,
 } from '../../../../player/video-player.component';
-import type { NativePlaybackOption } from '../../../../player/native-playback-option';
-import type { PlayerTelemetryTarget } from '../../../../telemetry/telemetry.types';
+import {
+  type NativePlaybackOption,
+  progressKey,
+} from '../../../../player/native-playback-option';
 import { orderPreviewFrames } from '../../../../player/preview-frames';
 import { PlayerWindowService } from '../../../../windows/player-window.service';
 import { CommentsComponent } from '../comments/comments.component';
@@ -210,28 +213,10 @@ export class DescriptionTabComponent {
 
   /**
    * Каталог для выбора серии и озвучки прямо в плеере: все серии обоих
-   * источников. Полоса просмотра — по локальной истории своей озвучки.
+   * источников. Отметки просмотра — отдельно (`episodeProgress`).
    */
   readonly nativeOptions = computed<readonly NativePlaybackOption[]>(() => {
-    const animeId = this.anime().animeId;
     const onDisk = this.onDisk();
-    const watched = this.watched();
-    const progress = new Map<string, number>();
-
-    for (const record of this.localProgress.records()) {
-      if (
-        record.animeId === animeId &&
-        record.positionSecs > 0 &&
-        record.durationSecs > 0
-      ) {
-        progress.set(
-          `${record.dubbing}\n${record.episode}`,
-          record.finished
-            ? 100
-            : Math.min((record.positionSecs / record.durationSecs) * 100, 100)
-        );
-      }
-    }
 
     return this.videos()
       .filter((video) => Number(video.number) >= 1)
@@ -242,23 +227,60 @@ export class DescriptionTabComponent {
         iframeUrl: video.iframeUrl,
         skips: video.skips,
         local: onDisk.has(video.videoId),
-        watched: watched.has(Number(video.number)),
-        progress:
-          progress.get(`${video.data.dubbing}\n${Number(video.number)}`) ?? 0,
       }));
   });
 
-  readonly telemetryTarget = computed<PlayerTelemetryTarget | null>(() => {
-    const episode = this.selectedEpisode();
+  /** Полоса просмотра в меню серий — по локальной истории своей озвучки. */
+  readonly episodeProgress = computed<ReadonlyMap<string, number>>(() => {
+    const animeId = this.anime().animeId;
+    const progress = new Map<string, number>();
 
-    return episode
-      ? {
-          animeId: this.anime().animeId,
-          episode: Number(episode.number),
-          player: episode.data.player,
-        }
-      : null;
+    for (const record of this.localProgress.records()) {
+      if (
+        record.animeId === animeId &&
+        record.positionSecs > 0 &&
+        record.durationSecs > 0
+      ) {
+        progress.set(
+          progressKey(record.dubbing, record.episode),
+          record.finished
+            ? 100
+            : Math.min((record.positionSecs / record.durationSecs) * 100, 100)
+        );
+      }
+    }
+
+    return progress;
   });
+
+  /**
+   * Та же серия у AniLiberty — запасной путь, когда Kodik не отдал поток.
+   * Озвучка сама не меняется: кнопку в ошибке плеера жмёт зритель.
+   */
+  private readonly anilibriaAlternative = computed(() => {
+    const current = this.selectedEpisode();
+    if (!current || isAnilibriaLocator(current.iframeUrl)) {
+      return null;
+    }
+
+    return (
+      this.videos().find(
+        (video) =>
+          isAnilibriaLocator(video.iframeUrl) && video.number === current.number
+      ) ?? null
+    );
+  });
+
+  readonly alternativeLabel = computed(() =>
+    this.anilibriaAlternative() ? 'Смотреть в озвучке AniLibria' : null
+  );
+
+  switchToAlternative(): void {
+    const target = this.anilibriaAlternative();
+    if (target) {
+      this.selectFromPlayer(target.iframeUrl);
+    }
+  }
 
   readonly isLastEpisode = computed(() => {
     const current = this.selectedEpisode();
